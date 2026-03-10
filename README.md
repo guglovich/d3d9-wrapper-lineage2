@@ -1,4 +1,4 @@
-[🇷🇺 Русская версия](README_RU.md)
+[Русская версия](README_RU.md)
 
 # d3d9 wrapper for Lineage 2
 
