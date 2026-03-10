@@ -54,7 +54,9 @@ Compatible with ReShade when loaded via `opengl32.dll` (standard UE2 setup — n
 
 ## Screenshots
 
-*// visual comparison coming*
+<img width="1920" height="1080" alt="image-comparison(1)" src="https://github.com/user-attachments/assets/a08ff500-c18e-40f4-aea2-bec4c4dbbe7a" />
+<img width="1920" height="1080" alt="image-comparison" src="https://github.com/user-attachments/assets/b96933cd-45cc-414a-8476-72ce11bc0a14" />
+
 
 ---
 
