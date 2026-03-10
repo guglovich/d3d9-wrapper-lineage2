@@ -53,7 +53,6 @@ struct Config {
     int   fog_mode        = 0;
     float fog_start       = 4096.0f;
     float fog_end         = 16384.0f;
-    DWORD fog_color       = 0x00C8D4E8;
     int   frame_latency   = 1;
     bool  detector        = true;
     bool  enhancements    = true;
@@ -90,13 +89,11 @@ static void config_load() {
                 "; Mipmap LOD bias. Negative = sharper mips. 0.0 = off.\n"
                 "lod_bias=-1.0\n\n"
                 "[fog]\n"
-                "; 0=off  1=full override  2=blend (game color + proxy distances)\n"
+                "; 0=off  1=blend (game color + proxy distances)\n"
                 "mode=0\n"
                 "; Fog distances in UE units (game defaults: start=8192 end=20480)\n"
                 "start=4096.0\n"
-                "end=16384.0\n"
-                "; Fog color hex RGB, used in mode=1 only\n"
-                "color=0xC8D4E8\n\n"
+                "end=16384.0\n\n"
                 "[latency]\n"
                 "; Max frames GPU can queue ahead of CPU. Lower = less input lag.\n"
                 "; 1 = minimum (recommended). 0 = use driver default (~3). Range: 0-16.\n"
@@ -126,11 +123,6 @@ static void config_load() {
     g_cfg.fog_mode       = ini_int(path,   "fog",      "mode",         0);
     g_cfg.fog_start      = ini_float(path, "fog",      "start",        4096.0f);
     g_cfg.fog_end        = ini_float(path, "fog",      "end",          16384.0f);
-    {
-        char buf[32] = "0xC8D4E8";
-        GetPrivateProfileStringA("fog", "color", "0xC8D4E8", buf, sizeof(buf), path);
-        g_cfg.fog_color = (DWORD)strtoul(buf, nullptr, 16);
-    }
     g_cfg.frame_latency  = ini_int(path, "latency",  "frame_latency", 1);
     g_cfg.detector       = ini_int(path, "detector", "enabled",       1) != 0;
 
@@ -272,15 +264,6 @@ static void detector_dump() {
 // ==========================================================
 static DWORD g_fog_game_color = 0x00F4FFB9;
 
-static void fog_apply_full(IDirect3DDevice9* dev) {
-    dev->SetRenderState(D3DRS_FOGENABLE,      TRUE);
-    dev->SetRenderState(D3DRS_FOGCOLOR,       g_cfg.fog_color);
-    dev->SetRenderState(D3DRS_FOGTABLEMODE,   D3DFOG_LINEAR);
-    dev->SetRenderState(D3DRS_FOGVERTEXMODE,  D3DFOG_NONE);
-    dev->SetRenderState(D3DRS_FOGSTART,       *(DWORD*)&g_cfg.fog_start);
-    dev->SetRenderState(D3DRS_FOGEND,         *(DWORD*)&g_cfg.fog_end);
-    dev->SetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
-}
 static void fog_apply_blend(IDirect3DDevice9* dev) {
     dev->SetRenderState(D3DRS_FOGENABLE,      TRUE);
     dev->SetRenderState(D3DRS_FOGCOLOR,       g_fog_game_color);
@@ -290,7 +273,10 @@ static void fog_apply_blend(IDirect3DDevice9* dev) {
     dev->SetRenderState(D3DRS_FOGEND,         *(DWORD*)&g_cfg.fog_end);
     dev->SetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
 }
-static void fog_reset(IDirect3DDevice9* dev) { dev->SetRenderState(D3DRS_FOGENABLE, FALSE); }
+static void fog_reset(IDirect3DDevice9* dev) {
+    // Let the game restore its own fog state naturally on next frame
+    (void)dev;
+}
 
 // ==========================================================
 // Sampler states
@@ -330,8 +316,7 @@ static void hotkey_poll(IDirect3DDevice9* dev) {
             g_cfg.enhancements = !g_cfg.enhancements;
             if (g_cfg.enhancements) {
                 sampler_apply(dev);
-                if      (g_cfg.fog_mode == 1) fog_apply_full(dev);
-                else if (g_cfg.fog_mode == 2) fog_apply_blend(dev);
+                if (g_cfg.fog_mode == 1) fog_apply_blend(dev);
             } else { sampler_reset(dev); fog_reset(dev); }
             if (g_hwnd) SetWindowTextA(g_hwnd, g_cfg.enhancements
                 ? "Lineage II [Enhancements: ON]"
@@ -434,8 +419,7 @@ struct DeviceProxy : IDirect3DDevice9 {
             if (p->hDeviceWindow) hwnd_set(p->hDeviceWindow);
             if (g_cfg.enhancements) {
                 sampler_apply(real);
-                if      (g_cfg.fog_mode == 1) fog_apply_full(real);
-                else if (g_cfg.fog_mode == 2) fog_apply_blend(real);
+                if (g_cfg.fog_mode == 1) fog_apply_blend(real);
             }
             latency_apply(real);
         }
@@ -445,7 +429,7 @@ struct DeviceProxy : IDirect3DDevice9 {
     HRESULT STDMETHODCALLTYPE Present(const RECT* a, const RECT* b, HWND c, const RGNDATA* d) override {
         hwnd_set(c);
         hotkey_poll(real);
-        if (g_cfg.enhancements && g_cfg.fog_mode == 2) fog_apply_blend(real);
+        if (g_cfg.enhancements && g_cfg.fog_mode == 1) fog_apply_blend(real);
         HRESULT hr = real->Present(a, b, c, d);
         fps_post_present();
         return hr;
@@ -514,9 +498,8 @@ struct DeviceProxy : IDirect3DDevice9 {
             if (a == D3DRS_ALPHABLENDENABLE) g_det.alpha_blend_enabled = (b != 0);
         }
         if (a == D3DRS_FOGCOLOR) g_fog_game_color = b;
-        if (g_cfg.enhancements && g_cfg.fog_mode > 0) {
+        if (g_cfg.enhancements && g_cfg.fog_mode == 1) {
             if (a == D3DRS_FOGSTART || a == D3DRS_FOGEND) return S_OK;
-            if (a == D3DRS_FOGENABLE && g_cfg.fog_mode == 1) { fog_apply_full(real); return S_OK; }
         }
         return real->SetRenderState(a, b);
     }
@@ -657,8 +640,7 @@ struct D3DProxy : IDirect3D9 {
             if (e) { px->sw = e->BackBufferWidth ? e->BackBufferWidth : 1920; px->sh = e->BackBufferHeight ? e->BackBufferHeight : 1080; }
             if (g_cfg.enhancements) {
                 sampler_apply(px->real);
-                if      (g_cfg.fog_mode == 1) fog_apply_full(px->real);
-                else if (g_cfg.fog_mode == 2) fog_apply_blend(px->real);
+                if (g_cfg.fog_mode == 1) fog_apply_blend(px->real);
             }
             latency_apply(px->real);
             *f = px;
