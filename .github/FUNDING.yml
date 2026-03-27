@@ -1,4 +1,4 @@
-# These are supported funding model platforms
+# Custom donation options
 
-github: guglovich
-custom: ['https://guglovich.github.io/donate/']
+custom:
+  - "https://guglovich.github.io/donate/"
