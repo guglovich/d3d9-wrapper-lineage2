@@ -5,6 +5,28 @@
 #include <cstring>
 
 // ==========================================================
+// Config (forward-declared for log_write)
+// ==========================================================
+struct Config {
+    int   anisotropy      = 16;
+    float lod_bias        = -1.0f;
+    bool  lod_bias_apply  = true;
+    int   fps_limit       = 0;
+    int   fog_mode        = 0;
+    float fog_start       = 4096.0f;
+    float fog_end         = 16384.0f;
+    DWORD fog_color       = 0x00C8D4E8;
+    int   frame_latency   = 1;
+    bool  logging         = false;
+    bool  detector        = false;
+    bool  enhancements    = true;
+    int   min_fps         = 8;
+    int   toggle_key      = 0xA5;
+    int   detect_key      = 0xA3;
+};
+static Config g_cfg;
+
+// ==========================================================
 // Logging
 // ==========================================================
 static FILE* g_log       = nullptr;
@@ -16,12 +38,18 @@ static void log_init(HINSTANCE h) {
     strncpy(g_base_path, p, MAX_PATH);
     char* slash = strrchr(g_base_path, '\\');
     if (slash) *(slash+1) = '\0';
+}
+static void log_open() {
+    if (g_log) return;
+    if (!g_cfg.logging) return;
+    char p[MAX_PATH];
+    strncpy(p, g_base_path, MAX_PATH);
     char* dot = strrchr(p, '.');
     if (dot) strcpy(dot, "_log.txt"); else strcat(p, "_log.txt");
     g_log = fopen(p, "w");
     if (g_log) { fprintf(g_log, "=== d3d9 proxy log ===\nlog: %s\n", p); fflush(g_log); }
 }
-static void log_write(const char* m) { if (!g_log) return; fprintf(g_log, "%s\n", m); fflush(g_log); }
+static void log_write(const char* m) { if (!g_log || !g_cfg.logging) return; fprintf(g_log, "%s\n", m); fflush(g_log); }
 static void log_close() { if (!g_log) return; fprintf(g_log, "proxy unloaded\n"); fflush(g_log); fclose(g_log); g_log = nullptr; }
 
 // ==========================================================
@@ -42,26 +70,6 @@ static int key_name_to_vk(const char* name) {
     return 0;
 }
 
-// ==========================================================
-// Config
-// ==========================================================
-struct Config {
-    int   anisotropy      = 16;
-    float lod_bias        = -1.0f;
-    bool  lod_bias_apply  = true;
-    int   fps_limit       = 0;
-    int   fog_mode        = 0;
-    float fog_start       = 4096.0f;
-    float fog_end         = 16384.0f;
-    DWORD fog_color       = 0x00C8D4E8;
-    int   frame_latency   = 1;
-    bool  detector        = true;
-    bool  enhancements    = true;
-    int   toggle_key      = 0xA5;
-    int   detect_key      = 0xA3;
-};
-static Config g_cfg;
-
 static int ini_int(const char* path, const char* sec, const char* key, int def) {
     return (int)GetPrivateProfileIntA(sec, key, def, path);
 }
@@ -81,9 +89,16 @@ static void config_load() {
         if (f) {
             fprintf(f,
                 "; d3d9 proxy for Lineage 2\n\n"
+                "[general]\n"
+                "; Enable logging to _log.txt. 0 = off, 1 = on.\n"
+                "logging=0\n\n"
                 "[fps]\n"
                 "; FPS limit. 0 = disabled.\n"
-                "limit=0\n\n"
+                "limit=0\n"
+                "; FPS when window is minimized or unfocused.\n"
+                "; Acts as resource optimization for old clients.\n"
+                "; 0 = disabled, 1-120 = target FPS.\n"
+                "min_fps=8\n\n"
                 "[graphics]\n"
                 "; Anisotropic filtering level (0/1 = off, 2-16 = on)\n"
                 "anisotropy=16\n"
@@ -105,21 +120,23 @@ static void config_load() {
                 "frame_latency=1\n\n"
                 "[detector]\n"
                 "; Log render state events to _log.txt\n"
-                "enabled=1\n\n"
+                "enabled=0\n\n"
                 "[hotkeys]\n"
                 "; Toggle all enhancements on/off\n"
                 "; Options: RightAlt, RightCtrl, Home, End, PageUp, PageDown,\n"
                 ";          Insert, Delete, ScrollLock, Pause, or hex e.g. 0x77\n"
                 "toggle=RightAlt\n"
-                "; Force detector dump to log\n"
-                "detect=RightCtrl\n"
+                "; Force detector dump to log (empty = no key)\n"
+                "detect=\n"
             );
             fclose(f);
         }
         log_write("Config created: d3d9_proxy.ini");
     } else { fclose(f); }
 
+    g_cfg.logging        = ini_int(path,   "general",  "logging",      0) != 0;
     g_cfg.fps_limit      = ini_int(path,   "fps",      "limit",        0);
+    g_cfg.min_fps        = ini_int(path,   "fps",      "min_fps",      8);
     g_cfg.anisotropy     = ini_int(path,   "graphics", "anisotropy",   16);
     g_cfg.lod_bias       = ini_float(path, "graphics", "lod_bias",     -1.0f);
     g_cfg.lod_bias_apply = (g_cfg.lod_bias != 0.0f);
@@ -132,21 +149,22 @@ static void config_load() {
         g_cfg.fog_color = (DWORD)strtoul(buf, nullptr, 16);
     }
     g_cfg.frame_latency  = ini_int(path, "latency",  "frame_latency", 1);
-    g_cfg.detector       = ini_int(path, "detector", "enabled",       1) != 0;
+    g_cfg.detector       = ini_int(path, "detector", "enabled",       0) != 0;
 
     char toggle_name[64] = "RightAlt";
     GetPrivateProfileStringA("hotkeys", "toggle", "RightAlt", toggle_name, sizeof(toggle_name), path);
     g_cfg.toggle_key = key_name_to_vk(toggle_name);
-    char detect_name[64] = "RightCtrl";
-    GetPrivateProfileStringA("hotkeys", "detect", "RightCtrl", detect_name, sizeof(detect_name), path);
-    g_cfg.detect_key = key_name_to_vk(detect_name);
+    char detect_name[64] = "";
+    GetPrivateProfileStringA("hotkeys", "detect", "", detect_name, sizeof(detect_name), path);
+    g_cfg.detect_key = detect_name[0] ? key_name_to_vk(detect_name) : 0;
 
     char buf[256];
     snprintf(buf, sizeof(buf),
-        "Config loaded: fps=%d aniso=%d lod=%.2f fog_mode=%d latency=%d detector=%d toggle=%s detect=%s",
-        g_cfg.fps_limit, g_cfg.anisotropy, g_cfg.lod_bias,
+        "Config loaded: logging=%d fps=%d min_fps=%d aniso=%d lod=%.2f fog_mode=%d latency=%d detector=%d toggle=%s detect=%s",
+        (int)g_cfg.logging,
+        g_cfg.fps_limit, g_cfg.min_fps, g_cfg.anisotropy, g_cfg.lod_bias,
         g_cfg.fog_mode, g_cfg.frame_latency, (int)g_cfg.detector,
-        toggle_name, detect_name);
+        toggle_name, detect_name[0] ? detect_name : "(none)");
     log_write(buf);
 }
 
@@ -205,33 +223,65 @@ static LARGE_INTEGER g_fps_last   = {};
 static bool          g_fps_init   = false;
 static double        g_fps_budget = 0.0;
 
+static LARGE_INTEGER g_min_fps_freq   = {};
+static LARGE_INTEGER g_min_fps_last   = {};
+static bool          g_min_fps_init   = false;
+static double        g_min_fps_budget = 0.0;
+
+static HWND g_hwnd = nullptr;
+
+static bool is_window_minimized_or_unfocused() {
+    if (!g_hwnd) return false;
+    if (IsIconic(g_hwnd)) return true;
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    DWORD fg_pid = 0;
+    GetWindowThreadProcessId(fg, &fg_pid);
+    DWORD my_pid = GetCurrentProcessId();
+    return (fg_pid != my_pid);
+}
+
 static void fps_init() {
     QueryPerformanceFrequency(&g_fps_freq);
     QueryPerformanceCounter(&g_fps_last);
     g_fps_init   = true;
     g_fps_budget = (g_cfg.fps_limit > 0) ? 1000000.0 / g_cfg.fps_limit : 0.0;
+    if (g_cfg.min_fps > 0) {
+        g_min_fps_budget = 1000000.0 / g_cfg.min_fps;
+    }
 }
 
 static void fps_post_present() {
-    if (!g_fps_init || g_cfg.fps_limit <= 0 || !g_cfg.enhancements) {
+    if (!g_fps_init || !g_cfg.enhancements) {
         QueryPerformanceCounter(&g_fps_last);
+        QueryPerformanceCounter(&g_min_fps_last);
         return;
     }
+
+    bool minimized = is_window_minimized_or_unfocused();
+    double budget  = (minimized && g_cfg.min_fps > 0) ? g_min_fps_budget : g_fps_budget;
+    if (budget <= 0.0) {
+        QueryPerformanceCounter(&g_fps_last);
+        QueryPerformanceCounter(&g_min_fps_last);
+        return;
+    }
+
+    LARGE_INTEGER* last = minimized ? &g_min_fps_last : &g_fps_last;
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
-    double elapsed = (double)(now.QuadPart - g_fps_last.QuadPart)
+    double elapsed = (double)(now.QuadPart - last->QuadPart)
                      * 1000000.0 / g_fps_freq.QuadPart;
-    double remain  = g_fps_budget - elapsed;
+    double remain  = budget - elapsed;
     if (remain > 1000.0) {
         DWORD ms = (DWORD)((remain - 800.0) / 1000.0);
         if (ms > 0) Sleep(ms);
         do {
             QueryPerformanceCounter(&now);
-            elapsed = (double)(now.QuadPart - g_fps_last.QuadPart)
+            elapsed = (double)(now.QuadPart - last->QuadPart)
                       * 1000000.0 / g_fps_freq.QuadPart;
-        } while (elapsed < g_fps_budget);
+        } while (elapsed < budget);
     }
-    QueryPerformanceCounter(&g_fps_last);
+    QueryPerformanceCounter(last);
 }
 
 // ==========================================================
@@ -319,7 +369,6 @@ static void sampler_reset(IDirect3DDevice9* dev) {
 // ==========================================================
 // Hotkeys / window title
 // ==========================================================
-static HWND g_hwnd = nullptr;
 static bool g_key_was_down = false, g_det_was_down = false;
 static void hwnd_set(HWND h) { if (h && !g_hwnd) g_hwnd = h; }
 
@@ -673,7 +722,7 @@ struct D3DProxy : IDirect3D9 {
 // ==========================================================
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
-        log_init(h); log_write("proxy loaded"); config_load();
+        log_init(h); config_load(); log_open();
     } else if (reason == DLL_PROCESS_DETACH) {
         detector_dump(); log_close();
         if (real_d3d9) { FreeLibrary(real_d3d9); real_d3d9 = nullptr; }
